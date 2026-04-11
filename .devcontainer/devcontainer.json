@@ -1,4 +1,4 @@
-{
+{#Analyze Components:
   "name": "Jekyll website",
   "image": "mcr.microsoft.com/devcontainers/jekyll:latest",
   "features": {
