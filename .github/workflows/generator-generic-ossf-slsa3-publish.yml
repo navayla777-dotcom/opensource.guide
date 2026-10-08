@@ -1,0 +1,81 @@
+What
+Adds two  CLI commands for checking a downloaded .vsix package's signature - no server-side changes needed, since the registry already exposes everything they need (files.signature / files.publicKey on any signed version's metadata).
+ verify <extension.vsix>
+Resolves the namespace/name/version from the package's own manifest, fetches the matching version's signature and public key from the registry, and verifies the Ed25519 signature over the raw package bytes using Node's built-in crypto - the same check VS Code itself performs on install. No proprietary signing dependency required.
+On success: ✅ This package is identical to ns.ext v1.2.3 as published to <registry>.
+On failure: explains the package doesn't match what that registry published, and may have been tampered with or come from elsewhere.
+ verify-signature -i <pkg> -m <manifest> -s <signature> -k <publicKey>
+The fully offline counterpart, mirroring  verify-signature's exact command shape for a package/manifest/signature trio already on disk - no registry involved. The one deliberate deviation from : a public key must be supplied explicitly (-k/--publicKeyPath), since each Open VSX registry holds its own signing key rather than trusting one baked-in Marketplace key.
+Beyond the outer signature, it cross-checks the manifest's per-entry SHA256 digests against the package's actual contents and reports exactly which entry doesn't match, is missing from the manifest, or is missing from the package - a level of diagnostic detail the signature check alone can't give.
+Also in this PR
+Bumped the minimum supported Node.js version to 22 (engines field + @types/node), matching what was already done for .
+Adds readAllZipEntries to zip.ts - a case-preserving companion to the existing readZip, needed because manifest entry keys must match original (non-lowercased) file names.
+Testing
+yarn build (tsc + lint) clean. Full yarn test: 45/45 passing, including a real Ed25519 keypair/signature and hand-built zip fixtures for both commands (valid/tampered/wrong-key/unsigned cases, allVersions resolution, and every manifest-mismatch case for verify-signature). Also manually smoke-tested both commands end-to-end against real generated fixtures.
+
+Pull request overview
+Adds local verification capabilities to the  CLI so users can confirm a downloaded VSIX is identical to what a registry published (online) or validate a package/manifest/signature trio entirely offline, aligning with VS Code/vsce signature verification behavior.
+Changes:
+Add  verify and  verify-signature commands (registry-backed vs fully offline verification).
+Add zip helper for case-preserving entry reads to support manifest entry name matching.
+Bump CLI minimum Node.js version to 22 and update dependencies/tests accordingly.
+Reviewed changes
+Copilot reviewed 11 out of 12 changed files in this pull request and generated 2 comments.
+Show a summary per file
+File
+Description
+cli/yarn.lock
+Updates lockfile for Node 22 typings and new zip-building test dependency ().
+cli/test/unit/verify.spec.ts
+Adds unit tests covering verify success and key/signature/unsigned failure modes plus allVersions resolution.
+cli/test/unit/verify-signature.spec.ts
+Adds unit tests for offline signature verification and detailed manifest mismatch reporting.
+cli/src/zip.ts
+Exports readZip and adds readAllZipEntries for case-preserving zip entry access.
+cli/src/verify.ts
+Implements registry-backed VSIX signature verification using registry-provided signature/public key.
+cli/src/verify-signature.ts
+Implements fully offline signature verification plus manifest digest cross-checks with detailed mismatch reporting.
+cli/src/verify-signature-options.ts
+Defines options interface for offline verification inputs.
+cli/src/verify-options.ts
+Defines options interface for registry-backed verification inputs.
+cli/src/main.ts
+Wires new verify and verify-signature commands into the CLI.
+cli/README.md
+Documents new verification commands and their intended usage.
+cli/package.json
+Bumps minimum Node.js engine version to 22 and adds dev deps for tests.
+cli/CHANGELOG.md
+Documents the new commands and Node.js version bump in the CLI changelog.
+
+Suppressed comments (1)
+cli/src/verify-signature.ts:106
+When an entry exists in the manifest but is missing digests.sha256, the current logic reports it as a digest mismatch. This is inaccurate and makes it harder to debug malformed manifests; report a clear "missing digest" issue and only compare when a digest is present.
+       if (entry.digests?.sha256 !== sha256Base64(content)) {
+            issues.push(`'${name}' does not match its digest in the manifest`);
+        }
+
+
+💡 Add a code-review agent skill or configure MCP servers for context-aware, tailored reviews. Learn more in the docs.
+
+In cli/src/verify-signature.ts:
+> +    const actualPackageDigest = sha256Base64(packageBytes);
++    if (manifest.package?.digests?.sha256 !== actualPackageDigest) {
++        issues.push('the package digest does not match the manifest');
++    }
+
+checkManifest reports a digest "does not match" even when the manifest does not contain a package SHA256 at all (e.g. manifest.package.digests.sha256 missing). That makes diagnostics misleading when the manifest is incomplete/corrupted; it should distinguish "missing" vs "mismatch".
+This issue also appears on line 104 of the same file.
+
+In cli/src/zip.ts:
+> +export async function readAllZipEntries(packagePath: string): Promise<Map<string, Buffer>> {
++	const result = new Map<string, Buffer>();
++	const zipfile = await yauzl.open(packagePath);
++	try {
++		for await (const entry of zipfile) {
+
+readAllZipEntries buffers every file in the VSIX into memory at once. verify-signature already loads the full package into memory for the outer signature check, so this can effectively double peak memory for large extensions and become a reliability issue. Consider streaming each entry into a SHA256 hash (and tracking seen keys) instead of materializing all entry buffers in a Map.
+—
+
+
